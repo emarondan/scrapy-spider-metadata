@@ -4,6 +4,7 @@ from typing import Any, Generic, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from ._utils import get_generic_param, normalize_param_schema
+from .defaults import FromSetting
 
 ParamSpecT = TypeVar("ParamSpecT", bound=BaseModel)
 logger = getLogger(__name__)
@@ -29,6 +30,43 @@ class Args(Generic[ParamSpecT]):
             logger.error(f"Spider parameter validation failed: {e}")
             raise
         super().__init__(*args, **kwargs)
+
+    def _set_crawler(self, crawler):
+        super()._set_crawler(crawler)
+
+        if not hasattr(self, "args") or self.args is None:
+            return
+
+        param_model = get_generic_param(self.__class__, Args)
+        assert param_model is not None
+        assert issubclass(param_model, BaseModel)
+
+        # compat Pydantic v1/v2
+        if hasattr(self.args, "model_dump"):
+            data = self.args.model_dump(exclude_unset=True)
+        else:
+            data = self.args.dict(exclude_unset=True)
+
+        fields = getattr(param_model, "model_fields", None) or getattr(
+            param_model, "__fields__", {}
+        )
+
+        for field_name, field in fields.items():
+            default_val = getattr(field, "default", None)
+            if field_name in data and data[field_name] is not None:
+                continue
+            if isinstance(default_val, FromSetting):
+                getter_name = default_val.getter or "get"
+                getter = getattr(crawler.settings, getter_name, crawler.settings.get)
+                value = getter(default_val.name, default_val.default)
+                if value is not None:
+                    data[field_name] = value
+
+        try:
+            self.args = param_model(**data)
+        except ValidationError as e:
+            logger.error(f"Spider parameter validation failed: {e}")
+            raise
 
     @classmethod
     def get_param_schema(cls, normalize: bool = False) -> dict[Any, Any]:
