@@ -1,10 +1,13 @@
 from logging import getLogger
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from pydantic import BaseModel, ValidationError
 
 from ._utils import get_generic_param, normalize_param_schema
 from .defaults import FromSetting
+
+if TYPE_CHECKING:
+    from scrapy.crawler import Crawler
 
 ParamSpecT = TypeVar("ParamSpecT", bound=BaseModel)
 logger = getLogger(__name__)
@@ -31,21 +34,22 @@ class Args(Generic[ParamSpecT]):
             raise
         super().__init__(*args, **kwargs)
 
-    def _set_crawler(self, crawler):
-        super()._set_crawler(crawler)
+    @classmethod
+    def from_crawler(cls, crawler: "Crawler", *args: Any, **kwargs: Any) -> "Args[ParamSpecT]":
+        spider = cast("Args[ParamSpecT]", cast("Any", super()).from_crawler(crawler, *args, **kwargs))
 
-        if not hasattr(self, "args") or self.args is None:
-            return
+        if not hasattr(spider, "args") or spider.args is None:
+            return spider
 
-        param_model = get_generic_param(self.__class__, Args)
+        param_model = get_generic_param(cls, Args)
         assert param_model is not None
         assert issubclass(param_model, BaseModel)
 
         # compat Pydantic v1/v2
-        if hasattr(self.args, "model_dump"):
-            data = self.args.model_dump(exclude_unset=True)
+        if hasattr(spider.args, "model_dump"):
+            data = spider.args.model_dump(exclude_unset=True)
         else:
-            data = self.args.dict(exclude_unset=True)
+            data = spider.args.dict(exclude_unset=True)
 
         fields = getattr(param_model, "model_fields", None) or getattr(
             param_model, "__fields__", {}
@@ -63,10 +67,12 @@ class Args(Generic[ParamSpecT]):
                     data[field_name] = value
 
         try:
-            self.args = param_model(**data)
+            spider.args = cast("ParamSpecT", param_model(**data))
         except ValidationError as e:
             logger.error(f"Spider parameter validation failed: {e}")
             raise
+
+        return spider
 
     @classmethod
     def get_param_schema(cls, normalize: bool = False) -> dict[Any, Any]:
